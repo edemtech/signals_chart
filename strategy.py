@@ -2,6 +2,7 @@ import pandas as pd
 import ta
 import requests
 import time
+import numpy as np
 
 BINANCE_URL = "https://api.binance.com/api/v3/klines"
 BB_WINDOW = 20
@@ -122,6 +123,46 @@ def get_strategy_signals(symbol="ADAUSDT", interval="1m", days=7, max_entries=1)
     ada = add_signals(ada)
     ada = simulate_trades(ada, max_entries)
     return ada
+
+def backtest_signals(df, fee=0.001):
+    """
+    Простой бэктест: считает доходность по buySignal/sellSignal.
+    fee — комиссия за сделку (например, 0.001 = 0.1%)
+    Возвращает словарь со статистикой.
+    """
+    balance = 1.0
+    equity_curve = []
+    position = 0
+    entry_price = 0
+    trades = []
+
+    for i in range(len(df)):
+        if df["buySignal"].iloc[i] and position == 0:
+            position = 1
+            entry_price = df["close"].iloc[i] * (1 + fee)
+            trades.append({"type": "buy", "price": entry_price, "time": df.index[i]})
+        elif df["sellSignal"].iloc[i] and position == 1:
+            exit_price = df["close"].iloc[i] * (1 - fee)
+            pnl = exit_price / entry_price
+            balance *= pnl
+            trades.append({"type": "sell", "price": exit_price, "time": df.index[i], "pnl": pnl})
+            position = 0
+        equity_curve.append(balance if position == 0 else balance * (df["close"].iloc[i] / entry_price))
+
+    equity_curve = np.array(equity_curve)
+    returns = np.diff(equity_curve) / equity_curve[:-1]
+    max_drawdown = np.max(np.maximum.accumulate(equity_curve) - equity_curve)
+    max_drawdown_pct = max_drawdown / np.maximum.accumulate(equity_curve).max() if equity_curve.size > 0 else 0
+
+    stats = {
+        "total_return": equity_curve[-1] - 1 if equity_curve.size > 0 else 0,
+        "total_return_pct": (equity_curve[-1] - 1) * 100 if equity_curve.size > 0 else 0,
+        "num_trades": len([t for t in trades if t["type"] == "sell"]),
+        "max_drawdown_pct": max_drawdown_pct * 100,
+        "equity_curve": equity_curve,
+        "trades": trades,
+    }
+    return stats
 
 # Визуализация только если файл запускается напрямую
 if __name__ == "__main__":
