@@ -9,11 +9,12 @@ import ta
 import plotly.subplots as sp
 
 from dash.dependencies import Output, Input, State
+from strategy import get_strategy_signals
 
 # --- Настройки ---
 symbol = "ADAUSDT"
 interval = "1m"
-days = 1  # Сколько дней загружать
+days = 30  # Сколько дней загружать
 
 def fetch_klines(symbol, interval, start_time, end_time, limit=1000):
     url = "https://api.binance.com/api/v3/klines"
@@ -69,13 +70,7 @@ app.layout = html.Div([
 )
 def update_chart(n, relayoutData):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Обновление графика, n_intervals={n}")
-    df = get_candles_df(symbol, interval, days)
-
-    # Индикаторы
-    df["mfi"] = ta.volume.money_flow_index(df["high"], df["low"], df["close"], df["volume"], window=14, fillna=True)
-    df["macd"] = ta.trend.macd(df["close"], window_slow=26, window_fast=12, fillna=True)
-    df["macd_signal"] = ta.trend.macd_signal(df["close"], window_slow=26, window_fast=12, window_sign=9, fillna=True)
-    df["rsi"] = ta.momentum.rsi(df["close"], window=14, fillna=True)
+    df = get_strategy_signals(symbol=symbol, interval=interval, days=days, max_entries=1)
 
     fig = sp.make_subplots(
         rows=4, cols=1,
@@ -94,6 +89,42 @@ def update_chart(n, relayoutData):
             low=df["low"],
             close=df["close"],
             name="Candles"
+        ),
+        row=1, col=1
+    )
+
+    # Bollinger Bands
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df["bb_upper"], name="BB Upper", line=dict(color="orange", dash="dot")),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df["bb_basis"], name="BB Basis", line=dict(color="gray", dash="dot")),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="orange", dash="dot")),
+        row=1, col=1
+    )
+
+    # Buy/Sell сигналы
+    fig.add_trace(
+        go.Scatter(
+            x=df.index, 
+            y=df["close"].where(df["buySignal"]), 
+            mode="markers", 
+            marker=dict(color="lime", size=8), 
+            name="Buy Signal"
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index, 
+            y=df["close"].where(df["sellSignal"]), 
+            mode="markers", 
+            marker=dict(color="red", size=8), 
+            name="Sell Signal"
         ),
         row=1, col=1
     )

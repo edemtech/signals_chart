@@ -3,8 +3,17 @@ import ta
 import requests
 import time
 
+BINANCE_URL = "https://api.binance.com/api/v3/klines"
+BB_WINDOW = 20
+BB_STD = 2.0
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+MFI_WINDOW = 14
+RSI_WINDOW = 14
+
 def fetch_klines(symbol, interval, start_time, end_time, limit=1000):
-    url = "https://api.binance.com/api/v3/klines"
+    """Загрузка исторических свечей с Binance."""
     all_data = []
     while start_time < end_time:
         params = {
@@ -14,7 +23,7 @@ def fetch_klines(symbol, interval, start_time, end_time, limit=1000):
             "endTime": int(end_time),
             "limit": limit
         }
-        response = requests.get(url, params=params)
+        response = requests.get(BINANCE_URL, params=params)
         if response.status_code != 200:
             break
         data = response.json()
@@ -26,6 +35,7 @@ def fetch_klines(symbol, interval, start_time, end_time, limit=1000):
     return all_data
 
 def get_df(symbol, interval, days):
+    """Получение DataFrame с историей по символу."""
     now = int(time.time() * 1000)
     start_time = now - days * 24 * 60 * 60 * 1000
     data = fetch_klines(symbol, interval, start_time, now)
@@ -38,35 +48,36 @@ def get_df(symbol, interval, days):
     df.set_index("timestamp", inplace=True)
     return df
 
-def get_strategy_signals(symbol="ADAUSDT", interval="1m", days=7, max_entries=1):
-    ada = get_df(symbol, interval, days)
-    btc = get_df("BTCUSDT", "1h", days)
+def add_indicators(df):
+    """Добавляет индикаторы в DataFrame."""
+    df["macd"] = ta.trend.macd(df["close"], window_slow=MACD_SLOW, window_fast=MACD_FAST, fillna=True)
+    df["macd_signal"] = ta.trend.macd_signal(df["close"], window_slow=MACD_SLOW, window_fast=MACD_FAST, window_sign=MACD_SIGNAL, fillna=True)
+    df["mfi"] = ta.volume.money_flow_index(df["high"], df["low"], df["close"], df["volume"], window=MFI_WINDOW, fillna=True)
+    df["rsi"] = ta.momentum.rsi(df["close"], window=RSI_WINDOW, fillna=True)
+    df["bb_basis"] = ta.trend.sma_indicator(df["close"], window=BB_WINDOW, fillna=True)
+    df["bb_dev"] = BB_STD * df["close"].rolling(window=BB_WINDOW, min_periods=1).std()
+    df["bb_upper"] = df["bb_basis"] + df["bb_dev"]
+    df["bb_lower"] = df["bb_basis"] - df["bb_dev"]
+    return df
 
-    # Индикаторы для ADAUSDT
-    ada["macd"] = ta.trend.macd(ada["close"], window_slow=26, window_fast=12, fillna=True)
-    ada["macd_signal"] = ta.trend.macd_signal(ada["close"], window_slow=26, window_fast=12, window_sign=9, fillna=True)
-    ada["mfi"] = ta.volume.money_flow_index(ada["high"], ada["low"], ada["close"], ada["volume"], window=14, fillna=True)
-    ada["rsi"] = ta.momentum.rsi(ada["close"], window=14, fillna=True)
-    ada["bb_basis"] = ta.trend.sma_indicator(ada["close"], window=20, fillna=True)
-    ada["bb_dev"] = 2.0 * ada["close"].rolling(window=20, min_periods=1).std()
-    ada["bb_upper"] = ada["bb_basis"] + ada["bb_dev"]
-    ada["bb_lower"] = ada["bb_basis"] - ada["bb_dev"]
+def add_btc_indicators(df):
+    """Добавляет индикаторы для BTCUSDT (1h)."""
+    df["bb_basis"] = ta.trend.sma_indicator(df["close"], window=BB_WINDOW, fillna=True)
+    df["bb_dev"] = BB_STD * df["close"].rolling(window=BB_WINDOW, min_periods=1).std()
+    df["bb_upper"] = df["bb_basis"] + df["bb_dev"]
+    return df
 
-    # Индикаторы для BTCUSDT (1h)
-    btc["bb_basis"] = ta.trend.sma_indicator(btc["close"], window=20, fillna=True)
-    btc["bb_dev"] = 2.0 * btc["close"].rolling(window=20, min_periods=1).std()
-    btc["bb_upper"] = btc["bb_basis"] + btc["bb_dev"]
-
-    # Сопоставляем BTCUSDT 1h к ADAUSDT 1m по времени
+def merge_btc_to_ada(ada, btc):
+    """Сопоставляет BTCUSDT 1h к ADAUSDT 1m по времени."""
     btc_1h = btc[["close", "open", "bb_upper"]].copy()
     btc_1h.columns = ["btc_close", "btc_open", "btc_upper"]
     ada = ada.merge(btc_1h, left_index=True, right_index=True, how="left")
     ada[["btc_close", "btc_open", "btc_upper"]] = ada[["btc_close", "btc_open", "btc_upper"]].ffill()
+    return ada
 
-    # Фильтр BTC
+def add_signals(ada):
+    """Добавляет сигнальные столбцы."""
     ada["btc_filter"] = ~((ada["btc_close"] > ada["btc_upper"]) | ((ada["btc_close"] < ada["btc_open"]) & (ada["btc_close"] > ada["btc_upper"] * 0.98)))
-
-    # Условия входа/выхода
     ada["buyCond"] = (
         (ada["macd"] > ada["macd_signal"]).shift(1) & (ada["macd"] <= ada["macd_signal"]) &
         (ada["mfi"] < 40) &
@@ -74,8 +85,10 @@ def get_strategy_signals(symbol="ADAUSDT", interval="1m", days=7, max_entries=1)
         (ada["btc_filter"])
     )
     ada["sellCond"] = (ada["rsi"] > 70) & (ada["close"] > ada["bb_upper"])
+    return ada
 
-    # Имитация сделок с max_entries
+def simulate_trades(ada, max_entries=1):
+    """Имитация сделок с max_entries."""
     entry_count = 0
     entry_counts = [0]
     buy_signal = [False]
@@ -97,7 +110,17 @@ def get_strategy_signals(symbol="ADAUSDT", interval="1m", days=7, max_entries=1)
     ada["buySignal"] = buy_signal
     ada["sellSignal"] = sell_signal
     ada["position"] = [int(c > 0) for c in entry_counts]
+    return ada
 
+def get_strategy_signals(symbol="ADAUSDT", interval="1m", days=7, max_entries=1):
+    """Основная функция стратегии."""
+    ada = get_df(symbol, interval, days)
+    btc = get_df("BTCUSDT", "1h", days)
+    ada = add_indicators(ada)
+    btc = add_btc_indicators(btc)
+    ada = merge_btc_to_ada(ada, btc)
+    ada = add_signals(ada)
+    ada = simulate_trades(ada, max_entries)
     return ada
 
 # Визуализация только если файл запускается напрямую
