@@ -9,12 +9,12 @@ import ta
 import plotly.subplots as sp
 
 from dash.dependencies import Output, Input, State
-from strategy import get_strategy_signals
+from strategy import get_strategy_signals, backtest_signals
 
 # --- Настройки ---
 symbol = "ADAUSDT"
 interval = "1m"
-days = 30  # Сколько дней загружать
+days = 10  # Сколько дней загружать
 
 def fetch_klines(symbol, interval, start_time, end_time, limit=1000):
     url = "https://api.binance.com/api/v3/klines"
@@ -193,7 +193,12 @@ def update_chart(n, relayoutData):
 
     return fig
 
+df = get_strategy_signals(symbol="ADAUSDT", interval="1m", days=10, max_entries=1)
+stats = backtest_signals(df)
 
+print(f"Доходность: {stats['total_return_pct']:.2f}%")
+print(f"Трейдов: {stats['num_trades']}")
+print(f"Макс. просадка: {stats['max_drawdown_pct']:.2f}%")
 
 if __name__ == "__main__":
     app.run(debug=True, port=8051)
