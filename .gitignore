@@ -1,0 +1,3 @@
+# Игнорировать файлы Pine Script
+*.pine
+*.pinescript
